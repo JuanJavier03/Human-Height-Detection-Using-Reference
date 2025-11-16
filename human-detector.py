@@ -1,93 +1,128 @@
 """
-Utility script for running the pretrained YOLOv8 human detector on a single image.
+Script sencillo para detectar personas en una imagen usando YOLOv8.
 
-Reference: README instructions describe using `best.pt` weights produced from the
-Roboflow dataset; this script wraps that workflow with configurable thresholds
-so detections can be tightened (higher `conf` / `iou`) when bounding boxes feel
-loose.
+Objetivo:
+- Recibir solo la ruta de una imagen como argumento.
+- Detectar personas en la imagen con un modelo ya entrenado (`best.pt`).
+- Dibujar las cajas de detección sobre la imagen.
+- Mostrar el resultado en una ventana, sin guardar nada en disco.
+- Guardar en una variable las coordenadas de las cajas de detección
+  e imprimirlas por consola (para usarlas en una segunda fase).
+
+Uso desde la terminal (ejemplos):
+    python human-detector.py foto_persona.jpg
+    python human-detector.py ruta/a/mi_imagen.png
+
+Requisitos:
+- Tener instalado el paquete `ultralytics` (YOLOv8).
+- Tener instalado `opencv-python` para mostrar la ventana.
+- Tener el archivo de pesos `best.pt` en la misma carpeta que este script,
+  o ajustar la constante PESOS_YOLO más abajo.
 """
 
-from argparse import ArgumentParser
-from pathlib import Path
+import sys
+from typing import List, Tuple
 
-from PIL import Image
+import cv2
 from ultralytics import YOLO
 
 
-def tighten_box(xyxy, shrink_ratio: float):
-    """Optionally shrink the detected box to compensate loose annotations."""
-    if shrink_ratio <= 0:
-        return map(int, xyxy)
-
-    x1, y1, x2, y2 = xyxy
-    w = x2 - x1
-    h = y2 - y1
-    dx = w * shrink_ratio
-    dy = h * shrink_ratio
-    return map(
-        int,
-        (
-            x1 + dx,
-            y1 + dy,
-            x2 - dx,
-            y2 - dy,
-        ),
-    )
+# Ruta de los pesos del modelo YOLO que se van a usar.
+# Se asume que el archivo `best.pt` está en la misma carpeta que este script.
+PESOS_YOLO = "best.pt"
 
 
-def run_detection(args):
-    model = YOLO(args.weights)
-    results = model(
-        args.source,
-        conf=args.conf,
-        iou=args.iou,
-        save=args.save_image,
-    )
+def detectar_personas_y_mostrar(ruta_imagen: str) -> List[Tuple[float, float, float, float]]:
+    """
+    Carga una imagen, ejecuta YOLOv8 para detectar personas y muestra
+    el resultado en una ventana.
 
-    # Save optional tightly cropped outputs alongside original image.
-    if args.export_crops:
-        img = Image.open(args.source)
-        out_dir = Path(args.crop_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        for idx, box in enumerate(results[0].boxes, start=1):
-            # Only keep person class (class 0 for this model).
-            if int(box.cls[0]) != 0:
-                continue
-            crop_coords = tighten_box(box.xyxy[0], args.shrink_ratio)
-            crop = img.crop(tuple(crop_coords))
-            crop.save(out_dir / f"person_{idx:02d}.jpg")
+    Además, devuelve y escribe por consola las coordenadas de las cajas
+    de detección en formato (x1, y1, x2, y2).
+
+    Parámetros
+    ----------
+    ruta_imagen : str
+        Ruta de la imagen sobre la que se quiere hacer la detección.
+
+    Devuelve
+    --------
+    List[Tuple[float, float, float, float]]
+        Lista de cajas de detección (una por persona detectada).
+    """
+
+    # Cargar el modelo YOLO con los pesos entrenados.
+    modelo = YOLO(PESOS_YOLO)
+
+    # Ejecutar la detección sobre la imagen.
+    # - conf: umbral de confianza mínimo para dibujar una detección.
+    # - iou: umbral de solapamiento para filtrar cajas muy parecidas.
+    resultados = modelo(ruta_imagen, conf=0.55, iou=0.7)
+
+    # `resultados` es una lista; para una sola imagen usamos el primer elemento.
+    resultado = resultados[0]
+
+    # Extraer las cajas de detección en formato (x1, y1, x2, y2).
+    # `boxes.xyxy` es un tensor; lo convertimos a lista de listas de floats.
+    cajas_xyxy: List[List[float]] = resultado.boxes.xyxy.tolist() if resultado.boxes is not None else []
+
+    # Convertimos cada caja a tupla para que sea más cómoda de manejar.
+    cajas: List[Tuple[float, float, float, float]] = [
+        (x1, y1, x2, y2) for (x1, y1, x2, y2) in cajas_xyxy
+    ]
+
+    # Imprimir por consola las cajas detectadas (bordes de detección).
+    # Esto será útil para la segunda parte (detección del folio / referencia).
+    if cajas:
+        print("Cajas de detección encontradas (x1, y1, x2, y2) en píxeles:")
+        for i, (x1, y1, x2, y2) in enumerate(cajas, start=1):
+            print(f"  Persona {i}: ({x1:.2f}, {y1:.2f}, {x2:.2f}, {y2:.2f})")
+    else:
+        print("No se han detectado personas en la imagen.")
+
+    # Dibujar las cajas y etiquetas de detección directamente sobre la imagen.
+    # `plot()` devuelve un array de imagen (tipo NumPy, en BGR) con las cajas pintadas.
+    imagen_con_cajas = resultado.plot()
+
+    # Mostrar la imagen en una ventana usando OpenCV.
+    # La ejecución se detiene hasta que pulses una tecla dentro de la ventana.
+    cv2.imshow("Detección de personas (YOLOv8)", imagen_con_cajas)
+    print("Ventana abierta: pulsa cualquier tecla sobre la ventana para cerrarla.")
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+    return cajas
+
+
+def main() -> None:
+    """
+    Punto de entrada del script.
+
+    Lógica de argumentos:
+    - No se aceptan opciones ni flags.
+    - Solo se espera UN argumento posicional: la ruta de la imagen.
+    """
+
+    # `sys.argv` contiene: [nombre_script, ruta_imagen]
+    if len(sys.argv) != 2:
+        print("Uso incorrecto.\n")
+        print("Forma correcta de ejecutar:")
+        print("    python human-detector.py ruta/de/la_imagen.jpg")
+        sys.exit(1)
+
+    ruta_imagen = sys.argv[1]
+
+    try:
+        _ = detectar_personas_y_mostrar(ruta_imagen)
+    except FileNotFoundError:
+        print(f"Error: no se encontró la imagen en la ruta: {ruta_imagen}")
+        sys.exit(1)
+    except Exception as e:
+        print("Ocurrió un error inesperado durante la detección:")
+        print(e)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    parser = ArgumentParser(description="Run YOLOv8 human detection on one image.")
-    parser.add_argument("--weights", default="best.pt", help="Path to YOLO weights.")
-    parser.add_argument(
-        "--source",
-        default="person4.jpg",
-        help="Path to image to run inference on.",
-    )
-    parser.add_argument("--conf", type=float, default=0.55, help="Confidence threshold.")
-    parser.add_argument("--iou", type=float, default=0.7, help="IOU threshold.")
-    parser.add_argument(
-        "--save-image",
-        action="store_true",
-        help="Save annotated image (stored under runs/detect).",
-    )
-    parser.add_argument(
-        "--export-crops",
-        action="store_true",
-        help="Export tightly cropped detections to --crop-dir.",
-    )
-    parser.add_argument(
-        "--crop-dir",
-        default="runs/salidas",
-        help="Directory where cropped detections are stored.",
-    )
-    parser.add_argument(
-        "--shrink-ratio",
-        type=float,
-        default=0.02,
-        help="Shrink percentage (0-0.45) applied to each side for tighter boxes.",
-    )
-    args = parser.parse_args()
-    run_detection(args)
+    main()
+
