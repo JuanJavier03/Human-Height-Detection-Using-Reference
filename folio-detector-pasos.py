@@ -7,11 +7,11 @@ permitiendo observar cómo evoluciona la imagen en cada etapa.
 
 CONTENIDOS USADOS:
 - Tema 3: Transformaciones de color (BGR → LAB)
-- Tema 4: Umbralización global y de Otsu
-- Tema 4: Operaciones morfológicas (apertura)
+- Tema 4: Umbralización simple (inRange / threshold)
+- Tema 4: Operaciones morfológicas (dilatación)
 - Tema 4: Detectores de bordes (Canny)
-- Tema 4: Detección de contornos, bounding boxes rotados (minAreaRect)
-- Tema 4: Aprox. poligonal y análisis geométrico de formas
+- Tema 4: Contornos y bounding boxes rotados (minAreaRect)
+- Tema 4: Análisis geométrico (ratio A4)
 
 Uso:
     python folio-detector-pasos.py imagen.jpg x1 y1 x2 y2
@@ -34,143 +34,149 @@ def procesar_roi(roi):
     """Realiza paso a paso la detección del folio, mostrando cada transformación."""
 
     # -------------------------------------------------------------
-    # PASO 1 — Imagen original del ROI
+    # PASO 1 — ROI original (zona del cuerpo)
     # -------------------------------------------------------------
-    mostrar("PASO 1: ROI original (recorte del cuerpo)", roi)
+    mostrar("PASO 1: ROI original (cuerpo + folio)", roi)
 
     # -------------------------------------------------------------
-    # PASO 2 — Tema 3: Conversión BGR → LAB
-    # LAB separa bien luminosidad (L) y cromaticidad (A,B)
+    # PASO 2 — Tema 3: BGR → LAB
+    # LAB separa bien la luminosidad (L) del color (A,B).
     # -------------------------------------------------------------
     lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB)
-    mostrar("PASO 2: Conversión a LAB (ROI en LAB)", lab)
+    mostrar("PASO 2: ROI en espacio LAB", lab)
 
-    # Separamos canales
     L, A, B = cv2.split(lab)
     mostrar("PASO 3: Canal L (luminosidad)", L)
     mostrar("PASO 4: Canal A (croma verde–rojo)", A)
     mostrar("PASO 5: Canal B (croma azul–amarillo)", B)
 
     # -------------------------------------------------------------
-    # PASO 6 — Tema 4: Máscara por luminosidad (candidatos a folio)
-    # Folio = muy brillante en L
+    # PASO 6 — Máscara por color: buscar "blanco neutro"
+    # Tema 3 + Tema 4: inRange
+    # El folio blanco en LAB tiene A y B cerca de un valor neutro.
+    # Suponemos valores aproximados en torno a 128 (esto se puede ajustar).
     # -------------------------------------------------------------
-    _, mask_luminosa = cv2.threshold(L, 180, 255, cv2.THRESH_BINARY)
-    mostrar("PASO 6: Máscara de zonas luminosas (umbral en L)", mask_luminosa)
-
-    # -------------------------------------------------------------
-    # PASO 7 — Tema 3/4: Máscara por color neutro en A y B
-    # Folio blanco ≈ neutro en A y B (valores alrededor de 128 en LAB).
-    # La piel, ropa, fondo suelen alejarse de 128.
-    # -------------------------------------------------------------
-    # Estos rangos se pueden ajustar según tus imágenes reales.
+    # Rango de "neutralidad" en A y B (ajustable según tus imágenes)
     mask_A = cv2.inRange(A, 120, 136)
     mask_B = cv2.inRange(B, 120, 136)
     mask_neutra = cv2.bitwise_and(mask_A, mask_B)
-    mostrar("PASO 7: Máscara de color neutro (A y B ≈ 128)", mask_neutra)
+    mostrar("PASO 6: Máscara de color neutro (A y B ≈ blanco)", mask_neutra)
 
     # -------------------------------------------------------------
-    # PASO 8 — Combinación de ambas máscaras:
-    #   - Muy luminoso
-    #   - Casi sin croma (blanco neutro)
-    # Esto apunta prácticamente solo al folio.
+    # PASO 7 — Máscara por luminosidad: zonas muy claras
+    # Tema 4: umbralización simple
     # -------------------------------------------------------------
-    mask_folio = cv2.bitwise_and(mask_luminosa, mask_neutra)
-    mostrar("PASO 8: Máscara combinada (luminoso + neutro)", mask_folio)
-
-    # Aplicamos esta máscara al canal L para concentrar Otsu en esa región
-    L_focus = cv2.bitwise_and(L, L, mask=mask_folio)
-    mostrar("PASO 9: Canal L restringido a zonas de posible folio", L_focus)
+    _, mask_L = cv2.threshold(L, 180, 255, cv2.THRESH_BINARY)
+    mostrar("PASO 7: Máscara de zonas luminosas (umbral en L)", mask_L)
 
     # -------------------------------------------------------------
-    # PASO 10 — Tema 4: Otsu sobre la región candidata a folio
-    # Ahora Otsu trabaja SOLO sobre píxeles compatibles con folio blanco.
+    # PASO 8 — Máscara combinada: "posible folio"
+    # (blanco y luminoso)
     # -------------------------------------------------------------
-    _, th_otsu = cv2.threshold(L_focus, 0, 255,
-                               cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    mostrar("PASO 10: Umbralización de Otsu sobre región de folio", th_otsu)
-
-    # Corrección por si Otsu sale invertido
-    if np.sum(th_otsu == 255) < np.sum(th_otsu == 0):
-        th_otsu = cv2.bitwise_not(th_otsu)
-        mostrar("PASO 11: Otsu invertido (corrección)", th_otsu)
+    mask_folio = cv2.bitwise_and(mask_neutra, mask_L)
+    mostrar("PASO 8: Máscara combinada (blanco + luminoso)", mask_folio)
 
     # -------------------------------------------------------------
-    # PASO 12 — Tema 4: Morfología (Apertura)
-    # Limpieza del ruido fino que aún pueda quedar.
+    # PASO 9 — Aplicar máscara al canal L
+    # Trabajaremos sólo en las zonas con color/luz de folio.
     # -------------------------------------------------------------
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-    th_open = cv2.morphologyEx(th_otsu, cv2.MORPH_OPEN, kernel)
-    mostrar("PASO 12: Morfología — Apertura (limpieza)", th_open)
+    L_folio = cv2.bitwise_and(L, L, mask=mask_folio)
+    mostrar("PASO 9: Canal L restringido a región tipo folio", L_folio)
 
     # -------------------------------------------------------------
-    # PASO 13 — Tema 4: Canny (visualización de bordes)
+    # PASO 10 — Tema 4: Canny sobre la zona candidata a folio
+    # Buscamos bordes fuertes allí donde hay blanco neutro.
     # -------------------------------------------------------------
-    edges = cv2.Canny(th_open, 50, 150)
-    mostrar("PASO 13: Bordes (Canny)", edges)
+    edges = cv2.Canny(L_folio, 50, 150)
+    mostrar("PASO 10: Bordes (Canny) en la región de posible folio", edges)
 
     # -------------------------------------------------------------
-    # PASO 14 — Tema 4: Contornos externos
+    # PASO 11 — Morfología sobre los bordes (dilatación)
+    # Tema 4: Operaciones morfológicas
+    # Dilatamos los bordes para cerrar huecos y formar contornos más claros.
     # -------------------------------------------------------------
-    contornos, _ = cv2.findContours(th_open, cv2.RETR_EXTERNAL,
-                                    cv2.CHAIN_APPROX_SIMPLE)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    edges_dilated = cv2.dilate(edges, kernel, iterations=2)
+    mostrar("PASO 11: Bordes dilatados (para contornos más robustos)", edges_dilated)
+
+    # -------------------------------------------------------------
+    # PASO 12 — Tema 4: Contornos sobre los bordes dilatados
+    # -------------------------------------------------------------
+    contornos, _ = cv2.findContours(
+        edges_dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
 
     debug_contornos = roi.copy()
     cv2.drawContours(debug_contornos, contornos, -1, (0, 255, 0), 2)
-    mostrar("PASO 14: Contornos detectados", debug_contornos)
+    mostrar("PASO 12: Contornos detectados en bordes dilatados", debug_contornos)
 
     # -------------------------------------------------------------
-    # PASO 15 — DETECCIÓN REAL DEL FOLIO (robusta ante inclinación)
+    # PASO 13 — Detección del folio por COLOR + FORMA (ratio A4)
     #
-    # Usamos minAreaRect (Tema 4) para obtener el rectángulo ROTADO
-    # que mejor encaja, y lo validamos por:
-    #   - área mínima
-    #   - proporción A4 ≈ 1.414
-    #   - rectitud del contorno (approxPolyDP)
+    # Aquí es donde de verdad usamos la forma:
+    #   - minAreaRect → rectángulo rotado
+    #   - ratio lado_largo/lado_corto ≈ 1.414
+    #   - área mínima para evitar ruido.
     # -------------------------------------------------------------
     mejor_rect = None
-    mejor_area = 0
+    mejor_puntuacion = 0.0
 
     for c in contornos:
-        area = cv2.contourArea(c)
-        if area < 5000:     # filtro de área fuerte (ajustable)
+        if len(c) < 5:
             continue
 
-        # Rectángulo mínimo rotado
+        # Rectángulo mínimo rotado alrededor del contorno
         rect = cv2.minAreaRect(c)
         (cx, cy), (w, h), angle = rect
 
         if w == 0 or h == 0:
             continue
 
-        # Proporción A4 independientemente de la orientación
-        ratio = max(w, h) / min(w, h)
-        if not (1.35 < ratio < 1.47):   # A4 ≈ 1.414 ± tolerancia
+        # Ratio geométrico
+        lado_largo = max(w, h)
+        lado_corto = min(w, h)
+        ratio = lado_largo / lado_corto
+
+        # Esperamos algo muy cercano a A4 ≈ 1.414
+        # Usamos una tolerancia relativamente estrecha.
+        if not (1.3 < ratio < 1.5):
             continue
 
-        # Rectitud del contorno (cuántos puntos elimina approxPolyDP)
-        per = cv2.arcLength(c, True)
-        approx = cv2.approxPolyDP(c, 0.02 * per, True)
-        ratio_rectitud = len(c) / len(approx)
-        if ratio_rectitud > 12:
+        # Área del rectángulo (para descartar cosas pequeñas).
+        area_rect = w * h
+        if area_rect < 5000:  # AJUSTAR según tamaño del ROI
             continue
 
-        if area > mejor_area:
-            mejor_area = area
+        # Comprobamos la "blancura" interior:
+        # Creamos una máscara del rectángulo y calculamos media de L.
+        box = cv2.boxPoints(rect)
+        box_int = box.astype(np.int32)
+
+        mask_rect = np.zeros(L.shape, dtype=np.uint8)
+        cv2.drawContours(mask_rect, [box_int], -1, 255, -1)
+
+        # Media de L dentro del rectángulo → debe ser alta si es folio
+        mean_L = cv2.mean(L, mask=mask_rect)[0]
+
+        # Puntuación combinada: área grande + buena luminosidad
+        puntuacion = area_rect * (mean_L / 255.0)
+
+        if puntuacion > mejor_puntuacion:
+            mejor_puntuacion = puntuacion
             mejor_rect = rect
 
     # -------------------------------------------------------------
-    # PASO 16 — Dibujo final del folio detectado (rectángulo rotado)
+    # PASO 14 — Dibujar el folio detectado (si existe)
     # -------------------------------------------------------------
     debug_final = roi.copy()
 
-    if mejor_rect:
+    if mejor_rect is not None:
         box = cv2.boxPoints(mejor_rect)
-        box = np.int0(box)
+        box = box.astype(np.int32)
         cv2.drawContours(debug_final, [box], 0, (255, 0, 0), 3)
-        mostrar("PASO 15: Folio detectado (rectángulo rotado A4)", debug_final)
+        mostrar("PASO 13: Folio detectado (color + ratio A4)", debug_final)
     else:
-        mostrar("PASO 15: No se detectó folio", roi)
+        mostrar("PASO 13: No se detectó folio", roi)
 
 
 def main():
