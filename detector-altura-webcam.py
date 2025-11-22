@@ -26,6 +26,7 @@ from collections import deque
 from ultralytics import YOLO
 
 PESOS_YOLO = "best.pt"
+PADDING_RECORTE = 0.10  # Recortar 10% arriba y abajo del bbox
 
 # ============================================================
 #  DETECTOR DE PERSONA (YOLO)
@@ -124,17 +125,34 @@ def detectar_folio_en_roi(roi):
 # ============================================================
 
 def calcular_altura(bbox_persona, rect_folio):
-    x1,y1,x2,y2 = bbox_persona
-    altura_px = y2 - y1
+    x1, y1, x2, y2 = bbox_persona
+    
+    # Recortar padding de YOLO (10% arriba y 10% abajo)
+    altura_bbox = y2 - y1
+    recorte = altura_bbox * PADDING_RECORTE
+    y1_ajustado = y1 + recorte
+    y2_ajustado = y2 - recorte
+    
+    altura_px = y2_ajustado - y1_ajustado
 
-    (_, _), (w,h), _ = rect_folio
-    folio_px = max(w,h)
+    (_, _), (w, h), _ = rect_folio
+    folio_px = max(w, h)
 
     if folio_px == 0:
         return None
 
+    # DEBUG: ver qué dimensiones estamos usando
+    print(f"DEBUG - Bbox original: {y2 - y1:.1f} px")
+    print(f"DEBUG - Bbox recortado: {altura_px:.1f} px (recorte: {recorte*2:.1f} px)")
+    print(f"DEBUG - Folio detectado w={w:.1f}, h={h:.1f} → usando {folio_px:.1f} px")
+    print(f"DEBUG - Ratio persona/folio: {altura_px/folio_px:.2f}")
+
     # Lado largo A4 = 29.7 cm
     altura_cm = (altura_px / folio_px) * 29.7
+    
+    print(f"DEBUG - Altura calculada: {altura_cm:.1f} cm")
+    print("="*50)
+    
     return altura_cm
 
 
@@ -197,7 +215,7 @@ def main():
                         (10, 60),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         1.2,
-                        (0, 255, 255),
+                        (0, 255, 0),  # Verde
                         3
                     )
 
@@ -209,7 +227,7 @@ def main():
                             (10, 110),
                             cv2.FONT_HERSHEY_SIMPLEX,
                             1.0,
-                            (0, 200, 255),
+                            (0, 255, 0),  # Verde
                             2
                         )
 
