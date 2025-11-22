@@ -6,7 +6,7 @@ del humano usando un folio A4 como referencia.
 Salida:
     - Ventana en tiempo real con:
          * Caja verde = humano detectado
-         * Caja azul = folio detectado
+         * Caja roja = folio detectado
          * Texto con altura estimada
     - Terminal imprime la altura estimada ocasionalmente.
 
@@ -22,6 +22,7 @@ Requisitos:
 
 import cv2
 import numpy as np
+from collections import deque
 from ultralytics import YOLO
 
 PESOS_YOLO = "best.pt"
@@ -144,6 +145,7 @@ def calcular_altura(bbox_persona, rect_folio):
 def main():
     print("Cargando YOLO...")
     modelo = YOLO(PESOS_YOLO)
+    alturas_recent = deque(maxlen=5)
 
     cap = cv2.VideoCapture(0)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
@@ -181,13 +183,14 @@ def main():
                 box[:,0] += x1
                 box[:,1] += y1
 
-                cv2.drawContours(frame_out, [box], 0, (255,0,0), 3)
+                cv2.drawContours(frame_out, [box], 0, (0,0,255), 3)
 
                 # -------------------------------------------------------
                 # 3) Calcular altura
                 # -------------------------------------------------------
                 altura_cm = calcular_altura(bbox, rect_folio)
                 if altura_cm is not None:
+                    alturas_recent.append(altura_cm)
                     cv2.putText(
                         frame_out,
                         f"Altura: {altura_cm:.1f} cm",
@@ -197,6 +200,18 @@ def main():
                         (0, 255, 255),
                         3
                     )
+
+                    if alturas_recent:
+                        altura_mediana = np.median(alturas_recent)
+                        cv2.putText(
+                            frame_out,
+                            f"Altura media: {altura_mediana:.1f} cm",
+                            (10, 110),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            1.0,
+                            (0, 200, 255),
+                            2
+                        )
 
                     print(f"Altura estimada: {altura_cm:.1f} cm")
 
