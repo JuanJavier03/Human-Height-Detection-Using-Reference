@@ -149,6 +149,9 @@ def main():
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
+    window_name = "Deteccion Humano + Folio + Altura"
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    
     print("Webcam iniciada. Pulsa 'q' para salir.")
 
     while True:
@@ -198,7 +201,7 @@ def main():
                     print(f"Altura estimada: {altura_cm:.1f} cm")
 
         # Mostrar frame final
-        cv2.imshow("Detección Humano + Folio + Altura (Webcam)", frame_out)
+        cv2.imshow(window_name, frame_out)
 
         # Salir con 'q'
         if cv2.waitKey(1) & 0xFF == ord('q'):

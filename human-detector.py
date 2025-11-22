@@ -86,6 +86,14 @@ def detectar_personas_y_mostrar(ruta_imagen: str) -> List[Tuple[float, float, fl
 
     # Mostrar la imagen en una ventana usando OpenCV.
     # La ejecución se detiene hasta que pulses una tecla dentro de la ventana.
+    
+    # Verificar que la imagen se cargó correctamente
+    if imagen_con_cajas is None or imagen_con_cajas.size == 0:
+        print("Error: la imagen no se pudo procesar correctamente")
+        return cajas
+    
+    print(f"Mostrando imagen de tamaño: {imagen_con_cajas.shape}")
+    cv2.namedWindow("Detección de personas (YOLOv8)", cv2.WINDOW_NORMAL)
     cv2.imshow("Detección de personas (YOLOv8)", imagen_con_cajas)
     print("Ventana abierta: pulsa cualquier tecla sobre la ventana para cerrarla.")
     cv2.waitKey(0)

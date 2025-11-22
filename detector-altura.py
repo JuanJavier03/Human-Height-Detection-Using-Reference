@@ -3,7 +3,7 @@ Detección integrada de HUMANO (YOLO) + FOLIO (OpenCV clásico)
 y cálculo aproximado de la altura en cm usando el folio como referencia.
 
 Uso:
-    python detectar_humano_folio.py foto.jpg
+    python detector-altura.py foto.jpg
 
 Salida:
     - Ventana con la imagen final: humano con caja verde y folio con caja azul.

@@ -56,40 +56,37 @@ def detectar_webcam() -> None:
             break
 
         # Predicción frame a frame, con los mismos parámetros de precisión del script original
-        resultados = modelo(frame, conf=0.55, iou=0.7, stream=True)
+        resultados = modelo(frame, conf=0.55, iou=0.7, verbose=False)
+        resultado = resultados[0]
 
-        # Procesar las detecciones obtenidas en este frame
-        for resultado in resultados:
-            frame_anotado = resultado.plot()
+        frame_anotado = resultado.plot()
+        cajas_xyxy = resultado.boxes.xyxy.tolist() if resultado.boxes is not None else []
+        cajas = [(x1, y1, x2, y2) for (x1, y1, x2, y2) in cajas_xyxy]
 
-            # Extraer las cajas (x1, y1, x2, y2)
-            cajas_xyxy = resultado.boxes.xyxy.tolist() if resultado.boxes is not None else []
-            cajas = [(x1, y1, x2, y2) for (x1, y1, x2, y2) in cajas_xyxy]
+        # Imprimir las detecciones por consola igual que en human-detector.py
+        if cajas:
+            print("---- DETECCIONES EN ESTE FRAME ----")
+            for i, (x1, y1, x2, y2) in enumerate(cajas, start=1):
+                print(f"Persona {i}: ({x1:.2f}, {y1:.2f}) -> ({x2:.2f}, {y2:.2f})")
+        else:
+            print("Sin detecciones en este frame.")
 
-            # Imprimir las detecciones por consola igual que en human-detector.py
-            if cajas:
-                print("---- DETECCIONES EN ESTE FRAME ----")
-                for i, (x1, y1, x2, y2) in enumerate(cajas, start=1):
-                    print(f"Persona {i}: ({x1:.2f}, {y1:.2f}) -> ({x2:.2f}, {y2:.2f})")
-            else:
-                print("Sin detecciones en este frame.")
+        # Contar personas detectadas
+        num_personas = len(cajas)
 
-            # Contar personas detectadas
-            num_personas = len(cajas)
+        # Mostrar contador en pantalla
+        cv2.putText(
+            frame_anotado,
+            f"Personas: {num_personas}",
+            (10, 50),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.2,
+            (0, 255, 0),
+            3
+        )
 
-            # Mostrar contador en pantalla
-            cv2.putText(
-                frame_anotado,
-                f"Personas: {num_personas}",
-                (10, 50),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1.2,
-                (0, 255, 0),
-                3
-            )
-
-            # Mostrar frame
-            cv2.imshow("YOLOv8 - Detección de Humanos (Webcam)", frame_anotado)
+        # Mostrar frame
+        cv2.imshow("YOLOv8 - Human Detection (Webcam)", frame_anotado)
 
         # Salir con la tecla 'q'
         if cv2.waitKey(1) & 0xFF == ord('q'):

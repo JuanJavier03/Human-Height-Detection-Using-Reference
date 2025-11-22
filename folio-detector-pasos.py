@@ -47,8 +47,8 @@ def procesar_roi(roi):
 
     L, A, B = cv2.split(lab)
     mostrar("PASO 3: Canal L (luminosidad)", L)
-    mostrar("PASO 4: Canal A (croma verde–rojo)", A)
-    mostrar("PASO 5: Canal B (croma azul–amarillo)", B)
+    mostrar("PASO 4: Canal A (croma verde - rojo)", A)
+    mostrar("PASO 5: Canal B (croma azul - amarillo)", B)
 
     # -------------------------------------------------------------
     # PASO 6 — Máscara por color: buscar "blanco neutro"
@@ -60,35 +60,35 @@ def procesar_roi(roi):
     mask_A = cv2.inRange(A, 120, 136)
     mask_B = cv2.inRange(B, 120, 136)
     mask_neutra = cv2.bitwise_and(mask_A, mask_B)
-    mostrar("PASO 6: Máscara de color neutro (A y B ≈ blanco)", mask_neutra)
+    mostrar("PASO 6: Filtro de color neutro (A y B aprox. blanco)", mask_neutra)
 
     # -------------------------------------------------------------
     # PASO 7 — Máscara por luminosidad: zonas muy claras
     # Tema 4: umbralización simple
     # -------------------------------------------------------------
     _, mask_L = cv2.threshold(L, 180, 255, cv2.THRESH_BINARY)
-    mostrar("PASO 7: Máscara de zonas luminosas (umbral en L)", mask_L)
+    mostrar("PASO 7: Filtro de zonas luminosas (umbral en L)", mask_L)
 
     # -------------------------------------------------------------
     # PASO 8 — Máscara combinada: "posible folio"
     # (blanco y luminoso)
     # -------------------------------------------------------------
     mask_folio = cv2.bitwise_and(mask_neutra, mask_L)
-    mostrar("PASO 8: Máscara combinada (blanco + luminoso)", mask_folio)
+    mostrar("PASO 8: Filtro combinada (blanco + luminoso)", mask_folio)
 
     # -------------------------------------------------------------
     # PASO 9 — Aplicar máscara al canal L
     # Trabajaremos sólo en las zonas con color/luz de folio.
     # -------------------------------------------------------------
     L_folio = cv2.bitwise_and(L, L, mask=mask_folio)
-    mostrar("PASO 9: Canal L restringido a región tipo folio", L_folio)
+    mostrar("PASO 9: Canal L restringido a zona tipo folio", L_folio)
 
     # -------------------------------------------------------------
     # PASO 10 — Tema 4: Canny sobre la zona candidata a folio
     # Buscamos bordes fuertes allí donde hay blanco neutro.
     # -------------------------------------------------------------
     edges = cv2.Canny(L_folio, 50, 150)
-    mostrar("PASO 10: Bordes (Canny) en la región de posible folio", edges)
+    mostrar("PASO 10: Bordes (Canny) en la zona de posible folio", edges)
 
     # -------------------------------------------------------------
     # PASO 11 — Morfología sobre los bordes (dilatación)
@@ -97,7 +97,7 @@ def procesar_roi(roi):
     # -------------------------------------------------------------
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
     edges_dilated = cv2.dilate(edges, kernel, iterations=2)
-    mostrar("PASO 11: Bordes dilatados (para contornos más robustos)", edges_dilated)
+    mostrar("PASO 11: Bordes dilatados (para contornos robustos)", edges_dilated)
 
     # -------------------------------------------------------------
     # PASO 12 — Tema 4: Contornos sobre los bordes dilatados
@@ -176,7 +176,7 @@ def procesar_roi(roi):
         cv2.drawContours(debug_final, [box], 0, (255, 0, 0), 3)
         mostrar("PASO 13: Folio detectado (color + ratio A4)", debug_final)
     else:
-        mostrar("PASO 13: No se detectó folio", roi)
+        mostrar("PASO 13: No se ha detectado el folio", roi)
 
 
 def main():
