@@ -56,34 +56,34 @@ def detectar_persona(frame, modelo):
 # ============================================================
 
 def detectar_folio_en_roi(roi):
-    """Versión optimizada para webcam 1280x720."""
+    """Versión mejorada: maneja luz mixta (sombra arriba, luz abajo)."""
 
     lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB)
     L, A, B = cv2.split(lab)
 
-    # Color blanco neutro
-    mask_A = cv2.inRange(A, 115, 140)
-    mask_B = cv2.inRange(B, 115, 140)
+    # Color blanco neutro (RELAJADO para diferentes condiciones de luz)
+    mask_A = cv2.inRange(A, 115, 140)  # Más amplio
+    mask_B = cv2.inRange(B, 115, 140)  # Más amplio
     mask_color = cv2.bitwise_and(mask_A, mask_B)
 
-    # Luminosidad alta
-    _, mask_L = cv2.threshold(L, 150, 255, cv2.THRESH_BINARY)
+    # Luminosidad alta (REDUCIDO para detectar folio en sombra)
+    _, mask_L = cv2.threshold(L, 150, 255, cv2.THRESH_BINARY)  # Era 180
 
     # Candidato a folio
     mask_folio = cv2.bitwise_and(mask_color, mask_L)
 
-    # Escala de grises
+    # Usar escala de grises para mejor detección de bordes
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     gray_folio = cv2.bitwise_and(gray, gray, mask=mask_folio)
     
-    # Ecualización CLAHE
+    # Ecualización CLAHE para mejorar contraste en zonas sombreadas
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
     gray_eq = clahe.apply(gray_folio)
     
-    # Detectar bordes
+    # Detectar bordes con umbrales más sensibles
     edges = cv2.Canny(gray_eq, 30, 120)
 
-    # Morfología
+    # Morfología para conectar bordes
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5,5))
     edges = cv2.dilate(edges, kernel, iterations=3)
     edges = cv2.erode(edges, kernel, iterations=1)
@@ -105,54 +105,39 @@ def detectar_folio_en_roi(roi):
         if w == 0 or h == 0:
             continue
 
-        # ===== FILTROS AJUSTADOS PARA 1280x720 =====
-        
-        # Lados del rectángulo detectado
-        lado_min = min(w, h)
-        lado_max = max(w, h)
-        
-        # Folio A4 en cámara 1280x720:
-        # - A 1m: lado corto ~100-200px, lado largo ~140-300px
-        # - A 3m: lado corto ~35-70px, lado largo ~50-100px
-        
-        # Rango válido del lado CORTO (21 cm real)
-        if lado_min < 30 or lado_min > 250:
-            continue
-            
-        # Rango válido del lado LARGO (29.7 cm real)  
-        if lado_max < 45 or lado_max > 400:
+        area_rect = w*h
+        # Área mínima baja para detectar folio más lejos o pequeño
+        if area_rect < 800:
             continue
 
-        # Área razonable
-        area_rect = w * h
-        if area_rect < 1500 or area_rect > 100000:
+        # Ratio A4 (más tolerante)
+        ratio = max(w,h) / min(w,h)
+        if not (1.2 < ratio < 1.6):
             continue
 
-        # Ratio A4 estricto (29.7/21 = 1.414)
-        ratio = lado_max / lado_min
-        if not (1.3 < ratio < 1.55):
+        # FILTRO CLAVE: El folio debe estar en la mitad SUPERIOR del ROI
+        # Esto descarta rectángulos en pies/suelo
+        if cy > h_roi * 0.6:  # Si está por debajo del 60%, descartarlo
             continue
 
-        # Posición superior (pecho, no pies)
-        if cy > h_roi * 0.6:
-            continue
-
-        # Luminosidad mínima
+        # Verificar luminosidad mínima (folio blanco, no sombra oscura)
         box = cv2.boxPoints(rect).astype(np.int32)
         mask_rect = np.zeros(L.shape, dtype=np.uint8)
         cv2.drawContours(mask_rect, [box], -1, 255, -1)
         mean_L = cv2.mean(L, mask=mask_rect)[0]
         
+        # Umbral bajo para permitir folio en sombra
         if mean_L < 130:
             continue
 
-        # Puntuación
-        factor_posicion = 1.5 * (1.0 - cy/h_roi)
+        # Puntuación: favorece área grande + luminosidad + posición superior
+        # cy/h_roi = posición vertical normalizada (0=arriba, 1=abajo)
+        factor_posicion = 1.5 * (1.0 - cy/h_roi)  # Bonus por estar arriba
         puntuacion = area_rect * (mean_L/255.0) * factor_posicion
 
         if puntuacion > mejor_puntuacion:
             mejor_puntuacion = puntuacion
-            mejor_rect = recto
+            mejor_rect = rect
 
     return mejor_rect
 
@@ -269,7 +254,7 @@ def main():
                         (10, 60),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         1.2,
-                        (0, 0, 255),  # Rojo
+                        (255, 0, 0),  # Azul
                         3
                     )
 
@@ -281,7 +266,7 @@ def main():
                             (10, 110),
                             cv2.FONT_HERSHEY_SIMPLEX,
                             1.0,
-                            (0, 0, 255),  # Rojo
+                            (255, 0, 0),  # Azul
                             2
                         )
 
