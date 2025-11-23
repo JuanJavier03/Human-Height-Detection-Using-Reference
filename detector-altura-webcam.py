@@ -31,12 +31,16 @@ PESOS_YOLO = "best.pt"
 #  DETECTOR DE PERSONA (YOLO)
 # ============================================================
 
+
 def detectar_persona(frame, modelo):
     """
     Devuelve:
       - bbox_persona = (x1,y1,x2,y2)  o None
       - frame con caja dibujada
     """
+    # Ejecutar la detección sobre el vídeo.
+    # - conf: umbral de confianza mínimo para dibujar una detección.
+    # - iou: umbral de solapamiento para filtrar cajas muy parecidas.
     r = modelo(frame, conf=0.55, iou=0.7)[0]
 
     if r.boxes is None or len(r.boxes) == 0:
@@ -46,7 +50,7 @@ def detectar_persona(frame, modelo):
     x1, y1, x2, y2 = map(int, r.boxes.xyxy[0].tolist())
 
     frame_out = frame.copy()
-    cv2.rectangle(frame_out, (x1,y1), (x2,y2), (0,255,0), 3)
+    cv2.rectangle(frame_out, (x1, y1), (x2, y2), (0, 255, 0), 3)    # Verde
 
     return (x1, y1, x2, y2), frame_out
 
@@ -56,83 +60,124 @@ def detectar_persona(frame, modelo):
 # ============================================================
 
 def detectar_folio_en_roi(roi):
-    """Versión mejorada: maneja luz mixta (sombra arriba, luz abajo)."""
+    """Versión optimizada para webcam: rápido y robusto."""
 
     lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB)
     L, A, B = cv2.split(lab)
 
     # Color blanco neutro (RELAJADO para diferentes condiciones de luz)
-    mask_A = cv2.inRange(A, 115, 140)  # Más amplio
+    mask_A = cv2.inRange(A, 115, 140)  # Más amplio (acercarse a 128 = neutro)
     mask_B = cv2.inRange(B, 115, 140)  # Más amplio
+    # Solo deja pasar los píxeles neutros de ambos canales
     mask_color = cv2.bitwise_and(mask_A, mask_B)
 
     # Luminosidad alta (REDUCIDO para detectar folio en sombra)
     _, mask_L = cv2.threshold(L, 150, 255, cv2.THRESH_BINARY)  # Era 180
 
-    # Candidato a folio
+    # Candidato a folio:
+    # máscara con los píxeles neutros (mask_color) y luminosos (mask_L)
     mask_folio = cv2.bitwise_and(mask_color, mask_L)
 
-    # Usar escala de grises para mejor detección de bordes
+    # Usar escala de grises sobre el ROI y mostrar mejor el folio (zona candidata)
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     gray_folio = cv2.bitwise_and(gray, gray, mask=mask_folio)
-    
+
     # Ecualización CLAHE para mejorar contraste en zonas sombreadas
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     gray_eq = clahe.apply(gray_folio)
-    
+
     # Detectar bordes con umbrales más sensibles
     edges = cv2.Canny(gray_eq, 30, 120)
 
     # Morfología para conectar bordes
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5,5))
+    # Los bordes del folio pueden tener pequeños huecos
+    # Dilatación los conecta
+    # Erosión elimina ruido sin borrar los bordes principales
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
     edges = cv2.dilate(edges, kernel, iterations=3)
     edges = cv2.erode(edges, kernel, iterations=1)
 
-    contornos, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # Encontrar todas las figuras cerradas en la imagen de bordes
+    # RETR_EXTERNAL: solo contornos externos (se ignoran agujeros internos)
+    # CHAIN_APPROX_SIMPLE: comprime contornos (solo guarda puntos clave)
+    # A --- B --- C
+    #             |
+    #             D --- E
+    # Podemos eliminar B y quedarnos con A - C
+    contornos, _ = cv2.findContours(
+        edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     mejor_rect = None
     mejor_puntuacion = 0
-    
-    h_roi, w_roi = roi.shape[:2]
+
+    h_roi, w_roi = roi.shape[:2]    # Solo guardamos alto x ancho
 
     for c in contornos:
-        if len(c) < 5:
+        if len(c) < 5:  # Número mínimo de puntos para minAreaRect (menos, es ruido)
             continue
+
+        # Cálculo del rectángulo mínimo que encierra el contorno
+            #  Usamos cv2.minAreaRect:
+            # - Calcular el rectángulo rotado de área mínima que encierra el contorno
+            # - Es perfecto para detectar papeles/folios que pueden estar inclinados
+
+            # Devuelve una tupla con:
+            # - (cx, cy): coordenadas del centro del rectángulo
+            # - (w, h): ancho y alto del rectángulo
+            # - angle: ángulo de rotación (en grados)
 
         rect = cv2.minAreaRect(c)
         (cx, cy), (w, h), angle = rect
 
+        # Si alguna de las dimensiones es cero, se descarta:
         if w == 0 or h == 0:
             continue
 
         area_rect = w*h
         # Área mínima baja para detectar folio más lejos o pequeño
+            # 800 px ≈ rectángulo de 28×28 píxeles (muy pequeño)
+            # Folio muy lejano o parcialmente visible pasa el filtro
+            # Eliminamos ruidos pequeños
         if area_rect < 800:
             continue
 
-        # Ratio A4 (más tolerante)
-        ratio = max(w,h) / min(w,h)
-        if not (1.2 < ratio < 1.6):
+        # Validar la proporción aproximada del folio A4 (21x29.7 cm)
+            # Calculamos la proporción entre el lado mayor y el menor
+            # Proporción real de un A4 = 29.7 / 21 ≈ 1.414
+        ratio = max(w, h) / min(w, h)   # Siempre >= 1
+        # 1.2 es casi un cuadrado, 1.6 es muy alargado
+        if not (1.2 < ratio < 1.6):     # Se garantiza un margen
             continue
 
-        # FILTRO CLAVE: El folio debe estar en la mitad SUPERIOR del ROI
-        # Esto descarta rectángulos en pies/suelo
+        # El folio debe estar en la mitad SUPERIOR del ROI
+        # Esto descarta rectángulos en pies/suelo (zonas brillantes como el sol)
         if cy > h_roi * 0.6:  # Si está por debajo del 60%, descartarlo
             continue
 
         # Verificar luminosidad mínima (folio blanco, no sombra oscura)
-        box = cv2.boxPoints(rect).astype(np.int32)
-        mask_rect = np.zeros(L.shape, dtype=np.uint8)
-        cv2.drawContours(mask_rect, [box], -1, 255, -1)
-        mean_L = cv2.mean(L, mask=mask_rect)[0]
-        
+        box = cv2.boxPoints(rect).astype(np.int32)  # Convierte el rectángulo a 4 puntos (esquinas, 4 coordenadas enteras)
+        mask_rect = np.zeros(L.shape, dtype=np.uint8)   # Máscara negra del tamaño del canal L
+        cv2.drawContours(mask_rect, [box], -1, 255, -1) # Rellenar el rectángulo en la máscara con blanco
+        mean_L = cv2.mean(L, mask=mask_rect)[0]  # Media de L dentro del rectángulo
+
         # Umbral bajo para permitir folio en sombra
+            # 130 en escala 0 - 255 ≈ 51% de brillo
+            # Folio en sombra tiene luminosidad baja pero no tanto
+            # Sombras muy oscuras/paredes grises se descartan
         if mean_L < 130:
             continue
 
         # Puntuación: favorece área grande + luminosidad + posición superior
         # cy/h_roi = posición vertical normalizada (0=arriba, 1=abajo)
+            # cy/h_roi cerca de 0 (por ejemplo, 0.2)
+            # cy/h_roi cerca de 1 (por ejemplo, 0.8)
+            # 1.0 - cy/h_roi invierte la escala (1=arriba, 0=abajo)
+                # 1.0 - 0.2 = 0.8 (más alto, mejor)
+            # 1.5 * (1.0 - cy/h_roi) escala el factor para dar más peso (elegir el "mejor folio")
         factor_posicion = 1.5 * (1.0 - cy/h_roi)  # Bonus por estar arriba
+            # area_rect: favorece folios grandes
+            # mean_L/255.0: favorece folios luminosos
+            # factor_posicion: favorece folios en zona superior
         puntuacion = area_rect * (mean_L/255.0) * factor_posicion
 
         if puntuacion > mejor_puntuacion:
@@ -148,23 +193,23 @@ def detectar_folio_en_roi(roi):
 
 def calcular_altura(bbox_persona, rect_folio):
     x1, y1, x2, y2 = bbox_persona
-    
+
     # Sin recorte de padding
     altura_px = y2 - y1
 
     (_, _), (w, h), angle = rect_folio
-    
+
     # DETECTAR ORIENTACIÓN DEL FOLIO
     # minAreaRect devuelve (w, h) donde w es siempre <= h
     # Necesitamos determinar qué dimensión corresponde al lado vertical
-    
+
     # Dimensiones reales A4
     LADO_LARGO_A4_CM = 29.7
     LADO_CORTO_A4_CM = 21.0
-    
+
     # Si h > w, el folio está orientado con el lado largo en VERTICAL
     # Si w > h, el folio está orientado con el lado largo en HORIZONTAL
-    
+
     if h > w:
         # VERTICAL: lado largo (29.7cm) está en posición vertical
         folio_px_vertical = h
@@ -183,15 +228,16 @@ def calcular_altura(bbox_persona, rect_folio):
     print(f"DEBUG - Orientación folio: {orientacion}")
     print(f"DEBUG - Altura persona: {altura_px:.1f} px")
     print(f"DEBUG - Folio detectado w={w:.1f}, h={h:.1f}")
-    print(f"DEBUG - Usando dimensión vertical: {folio_px_vertical:.1f} px = {referencia_cm} cm")
+    print(
+        f"DEBUG - Usando dimensión vertical: {folio_px_vertical:.1f} px = {referencia_cm} cm")
     print(f"DEBUG - Ratio persona/foli+o: {altura_px/folio_px_vertical:.2f}")
 
     # Regla de tres: altura_persona_px / folio_vertical_px = altura_cm / referencia_cm
     altura_cm = (altura_px / folio_px_vertical) * referencia_cm
-    
+
     print(f"DEBUG - Altura calculada: {altura_cm:.1f} cm")
     print("="*50)
-    
+
     return altura_cm
 
 
@@ -210,7 +256,7 @@ def main():
 
     window_name = "Deteccion Humano + Folio + Altura"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-    
+
     print("Webcam iniciada. Pulsa 'q' para salir.")
 
     while True:
@@ -227,7 +273,7 @@ def main():
         bbox, frame_out = detectar_persona(frame_out, modelo)
 
         if bbox is not None:
-            x1,y1,x2,y2 = bbox
+            x1, y1, x2, y2 = bbox
             roi = frame[y1:y2, x1:x2]
 
             # -------------------------------------------------------
@@ -237,10 +283,10 @@ def main():
 
             if rect_folio is not None:
                 box = cv2.boxPoints(rect_folio).astype(np.int32)
-                box[:,0] += x1
-                box[:,1] += y1
+                box[:, 0] += x1
+                box[:, 1] += y1
 
-                cv2.drawContours(frame_out, [box], 0, (0,0,255), 3)
+                cv2.drawContours(frame_out, [box], 0, (0, 0, 255), 3)
 
                 # -------------------------------------------------------
                 # 3) Calcular altura
