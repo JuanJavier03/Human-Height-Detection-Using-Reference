@@ -72,30 +72,30 @@ def detectar_folio_en_roi(roi):
     mask_color = cv2.bitwise_and(mask_A, mask_B)
 
     # Luminosidad alta (REDUCIDO para detectar folio en sombra)
-    _, mask_L = cv2.threshold(L, 150, 255, cv2.THRESH_BINARY)  # Era 180
+    _, mask_L = cv2.threshold(L, 180, 255, cv2.THRESH_BINARY)  # Era 180
 
     # Candidato a folio:
     # máscara con los píxeles neutros (mask_color) y luminosos (mask_L)
     mask_folio = cv2.bitwise_and(mask_color, mask_L)
 
     # Usar escala de grises sobre el ROI y mostrar mejor el folio (zona candidata)
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    gray_folio = cv2.bitwise_and(gray, gray, mask=mask_folio)
+    #gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    L_folio = cv2.bitwise_and(L, L, mask=mask_folio)
 
     # Ecualización CLAHE para mejorar contraste en zonas sombreadas
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-    gray_eq = clahe.apply(gray_folio)
+   # clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+   # gray_eq = clahe.apply(gray_folio)
 
     # Detectar bordes con umbrales más sensibles
-    edges = cv2.Canny(gray_eq, 30, 120)
+    edges = cv2.Canny(L_folio, 50, 150)
 
     # Morfología para conectar bordes
     # Los bordes del folio pueden tener pequeños huecos
     # Dilatación los conecta
     # Erosión elimina ruido sin borrar los bordes principales
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-    edges = cv2.dilate(edges, kernel, iterations=3)
-    edges = cv2.erode(edges, kernel, iterations=1)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    edges = cv2.dilate(edges, kernel, iterations=2)
+   # edges = cv2.erode(edges, kernel, iterations=1)
 
     # Encontrar todas las figuras cerradas en la imagen de bordes
     # RETR_EXTERNAL: solo contornos externos (se ignoran agujeros internos)
@@ -110,7 +110,7 @@ def detectar_folio_en_roi(roi):
     mejor_rect = None
     mejor_puntuacion = 0
 
-    h_roi, w_roi = roi.shape[:2]    # Solo guardamos alto x ancho
+   # h_roi, w_roi = roi.shape[:2]    # Solo guardamos alto x ancho
 
     for c in contornos:
         if len(c) < 5:  # Número mínimo de puntos para minAreaRect (menos, es ruido)
@@ -138,7 +138,7 @@ def detectar_folio_en_roi(roi):
             # 800 px ≈ rectángulo de 28×28 píxeles (muy pequeño)
             # Folio muy lejano o parcialmente visible pasa el filtro
             # Eliminamos ruidos pequeños
-        if area_rect < 800:
+        if area_rect < 5000:    #800 antes
             continue
 
         # Validar la proporción aproximada del folio A4 (21x29.7 cm)
@@ -146,13 +146,13 @@ def detectar_folio_en_roi(roi):
             # Proporción real de un A4 = 29.7 / 21 ≈ 1.414
         ratio = max(w, h) / min(w, h)   # Siempre >= 1
         # 1.2 es casi un cuadrado, 1.6 es muy alargado
-        if not (1.2 < ratio < 1.6):     # Se garantiza un margen
+        if not (1.3 < ratio < 1.5):     # Se garantiza un margen
             continue
 
         # El folio debe estar en la mitad SUPERIOR del ROI
         # Esto descarta rectángulos en pies/suelo (zonas brillantes como el sol)
-        if cy > h_roi * 0.6:  # Si está por debajo del 60%, descartarlo
-            continue
+       # if cy > h_roi * 0.6:  # Si está por debajo del 60%, descartarlo
+        #    continue
 
         # Verificar luminosidad mínima (folio blanco, no sombra oscura)
         box = cv2.boxPoints(rect).astype(np.int32)  # Convierte el rectángulo a 4 puntos (esquinas, 4 coordenadas enteras)
@@ -164,8 +164,8 @@ def detectar_folio_en_roi(roi):
             # 130 en escala 0 - 255 ≈ 51% de brillo
             # Folio en sombra tiene luminosidad baja pero no tanto
             # Sombras muy oscuras/paredes grises se descartan
-        if mean_L < 130:
-            continue
+        # if mean_L < 130:
+        #     continue
 
         # Puntuación: favorece área grande + luminosidad + posición superior
         # cy/h_roi = posición vertical normalizada (0=arriba, 1=abajo)
@@ -174,11 +174,13 @@ def detectar_folio_en_roi(roi):
             # 1.0 - cy/h_roi invierte la escala (1=arriba, 0=abajo)
                 # 1.0 - 0.2 = 0.8 (más alto, mejor)
             # 1.5 * (1.0 - cy/h_roi) escala el factor para dar más peso (elegir el "mejor folio")
-        factor_posicion = 1.5 * (1.0 - cy/h_roi)  # Bonus por estar arriba
+     #   factor_posicion = 1.5 * (1.0 - cy/h_roi)  # Bonus por estar arriba
             # area_rect: favorece folios grandes
             # mean_L/255.0: favorece folios luminosos
             # factor_posicion: favorece folios en zona superior
-        puntuacion = area_rect * (mean_L/255.0) * factor_posicion
+       # puntuacion = area_rect * (mean_L/255.0) * factor_posicion
+
+        puntuacion = area_rect * (mean_L/255.0)
 
         if puntuacion > mejor_puntuacion:
             mejor_puntuacion = puntuacion
@@ -204,39 +206,47 @@ def calcular_altura(bbox_persona, rect_folio):
     # Necesitamos determinar qué dimensión corresponde al lado vertical
 
     # Dimensiones reales A4
-    LADO_LARGO_A4_CM = 29.7
-    LADO_CORTO_A4_CM = 21.0
+   # LADO_LARGO_A4_CM = 29.7
+   # LADO_CORTO_A4_CM = 21.0
 
     # Si h > w, el folio está orientado con el lado largo en VERTICAL
     # Si w > h, el folio está orientado con el lado largo en HORIZONTAL
 
-    if h > w:
-        # VERTICAL: lado largo (29.7cm) está en posición vertical
-        folio_px_vertical = h
-        referencia_cm = LADO_LARGO_A4_CM
-        orientacion = "VERTICAL (alto)"
-    else:
-        # HORIZONTAL: lado corto (21cm) está en posición vertical
-        folio_px_vertical = h
-        referencia_cm = LADO_CORTO_A4_CM
-        orientacion = "HORIZONTAL (bajo)"
+    # if h > w:
+    #     # VERTICAL: lado largo (29.7cm) está en posición vertical
+    #     folio_px_vertical = h
+    #     referencia_cm = LADO_LARGO_A4_CM
+    #     orientacion = "VERTICAL (alto)"
+    # else:
+    #     # HORIZONTAL: lado corto (21cm) está en posición vertical
+    #     folio_px_vertical = h
+    #     referencia_cm = LADO_CORTO_A4_CM
+    #     orientacion = "HORIZONTAL (bajo)"
 
-    if folio_px_vertical == 0:
+    # if folio_px_vertical == 0:
+    #     return None
+
+    # # DEBUG: ver qué dimensiones estamos usando
+    # print(f"DEBUG - Orientación folio: {orientacion}")
+    # print(f"DEBUG - Altura persona: {altura_px:.1f} px")
+    # print(f"DEBUG - Folio detectado w={w:.1f}, h={h:.1f}")
+    # print(
+    #     f"DEBUG - Usando dimensión vertical: {folio_px_vertical:.1f} px = {referencia_cm} cm")
+    # print(f"DEBUG - Ratio persona/foli+o: {altura_px/folio_px_vertical:.2f}")
+    folio_px = max(w,h)
+
+    if folio_px == 0:
         return None
 
-    # DEBUG: ver qué dimensiones estamos usando
-    print(f"DEBUG - Orientación folio: {orientacion}")
-    print(f"DEBUG - Altura persona: {altura_px:.1f} px")
-    print(f"DEBUG - Folio detectado w={w:.1f}, h={h:.1f}")
-    print(
-        f"DEBUG - Usando dimensión vertical: {folio_px_vertical:.1f} px = {referencia_cm} cm")
-    print(f"DEBUG - Ratio persona/foli+o: {altura_px/folio_px_vertical:.2f}")
+
 
     # Regla de tres: altura_persona_px / folio_vertical_px = altura_cm / referencia_cm
-    altura_cm = (altura_px / folio_px_vertical) * referencia_cm
+   # altura_cm = (altura_px / folio_px_vertical) * referencia_cm
 
-    print(f"DEBUG - Altura calculada: {altura_cm:.1f} cm")
-    print("="*50)
+    altura_cm = (altura_px / folio_px) * 29.7
+
+    # print(f"DEBUG - Altura calculada: {altura_cm:.1f} cm")
+    # print("="*50)
 
     return altura_cm
 
@@ -248,7 +258,7 @@ def calcular_altura(bbox_persona, rect_folio):
 def main():
     print("Cargando YOLO...")
     modelo = YOLO(PESOS_YOLO)
-    alturas_recent = deque(maxlen=5)
+   # alturas_recent = deque(maxlen=5)
 
     cap = cv2.VideoCapture(0)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
@@ -293,33 +303,35 @@ def main():
                 # -------------------------------------------------------
                 altura_cm = calcular_altura(bbox, rect_folio)
                 if altura_cm is not None:
-                    alturas_recent.append(altura_cm)
+                   # alturas_recent.append(altura_cm)
                     cv2.putText(
                         frame_out,
                         f"Altura: {altura_cm:.1f} cm",
                         (10, 60),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         1.2,
-                        (255, 0, 0),  # Azul
+                        (0, 255, 255),  # Azul
                         3
                     )
 
-                    if alturas_recent:
-                        altura_mediana = np.median(alturas_recent)
+                    print(f"Altura estimada: {altura_cm: .1f} cm")
+
+                    if altura_cm:
+                        altura_mediana = np.median(altura_cm)
                         cv2.putText(
                             frame_out,
                             f"Altura media: {altura_mediana:.1f} cm",
                             (10, 110),
                             cv2.FONT_HERSHEY_SIMPLEX,
                             1.0,
-                            (255, 0, 0),  # Azul
+                            (0, 255, 255),  # Azul
                             2
                         )
 
                     print(f"Altura estimada: {altura_cm:.1f} cm")
 
         # Mostrar frame final
-        cv2.imshow(window_name, frame_out)
+        cv2.imshow("Deteccion Huamno + Folio + Altura (Webcam)", frame_out)
 
         # Salir con 'q'
         if cv2.waitKey(1) & 0xFF == ord('q'):
