@@ -258,7 +258,7 @@ def calcular_altura(bbox_persona, rect_folio):
 def main():
     print("Cargando YOLO...")
     modelo = YOLO(PESOS_YOLO)
-   # alturas_recent = deque(maxlen=5)
+    alturas_recent = deque(maxlen=5)  # DESCOMENTAR ESTA LÍNEA
 
     cap = cv2.VideoCapture(0)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
@@ -267,7 +267,13 @@ def main():
     window_name = "Deteccion Humano + Folio + Altura"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 
-    print("Webcam iniciada. Pulsa 'q' para salir.")
+    print("Webcam iniciada.")
+    print("Controles:")
+    print("  's' - Guardar captura en archivo")
+    print("  'c' - Copiar al portapapeles (requiere xclip)")
+    print("  'q' - Salir")
+
+    contador_capturas = 0
 
     while True:
         ret, frame = cap.read()
@@ -303,39 +309,66 @@ def main():
                 # -------------------------------------------------------
                 altura_cm = calcular_altura(bbox, rect_folio)
                 if altura_cm is not None:
-                   # alturas_recent.append(altura_cm)
+                    alturas_recent.append(altura_cm)  # AÑADIR a la cola
+                    
+                    # Altura del frame actual
                     cv2.putText(
                         frame_out,
                         f"Altura: {altura_cm:.1f} cm",
                         (10, 60),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         1.2,
-                        (0, 255, 255),  # Azul
+                        (0, 255, 255),
                         3
                     )
 
-                    print(f"Altura estimada: {altura_cm: .1f} cm")
-
-                    if altura_cm:
-                        altura_mediana = np.median(altura_cm)
+                    # MEDIANA de las últimas 5 mediciones
+                    if len(alturas_recent) > 0:
+                        altura_mediana = np.median(list(alturas_recent))
                         cv2.putText(
                             frame_out,
-                            f"Altura media: {altura_mediana:.1f} cm",
+                            f"Altura estimada: {altura_mediana:.1f} cm ({len(alturas_recent)} muestras)",
                             (10, 110),
                             cv2.FONT_HERSHEY_SIMPLEX,
                             1.0,
-                            (0, 255, 255),  # Azul
+                            (0, 255, 0),  # Verde para diferenciarla
                             2
                         )
 
-                    print(f"Altura estimada: {altura_cm:.1f} cm")
-
         # Mostrar frame final
-        cv2.imshow("Deteccion Huamno + Folio + Altura (Webcam)", frame_out)
+        cv2.imshow(window_name, frame_out)
 
-        # Salir con 'q'
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        # -------------------------------------------------------
+        # CONTROLES DE TECLADO
+        # -------------------------------------------------------
+        key = cv2.waitKey(1) & 0xFF
+
+        if key == ord('q'):
             break
+        
+        elif key == ord('s'):
+            # Guardar captura en archivo
+            nombre_archivo = f"captura_{contador_capturas:03d}.png"
+            cv2.imwrite(nombre_archivo, frame_out)
+            print(f"✓ Captura guardada: {nombre_archivo}")
+            contador_capturas += 1
+        
+        elif key == ord('c'):
+            # Copiar al portapapeles (requiere xclip en Linux)
+            temp_file = "/tmp/captura_temp.png"
+            cv2.imwrite(temp_file, frame_out)
+            
+            import subprocess
+            try:
+                subprocess.run(
+                    ["xclip", "-selection", "clipboard", "-t", "image/png", "-i", temp_file],
+                    check=True
+                )
+                print("✓ Captura copiada al portapapeles")
+            except FileNotFoundError:
+                print("✗ Error: xclip no instalado. Instala con: sudo apt install xclip")
+            except subprocess.CalledProcessError:
+                print("✗ Error al copiar al portapapeles")
 
     cap.release()
     cv2.destroyAllWindows()
