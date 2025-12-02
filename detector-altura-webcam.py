@@ -258,7 +258,7 @@ def calcular_altura(bbox_persona, rect_folio):
 def main():
     print("Cargando YOLO...")
     modelo = YOLO(PESOS_YOLO)
-    alturas_recent = deque(maxlen=5)  # DESCOMENTAR ESTA LÍNEA
+    alturas_recent = deque(maxlen=5)
 
     cap = cv2.VideoCapture(0)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
@@ -282,6 +282,7 @@ def main():
             break
 
         frame_out = frame.copy()
+        h_frame, w_frame = frame.shape[:2]
 
         # -------------------------------------------------------
         # 1) Detectar persona
@@ -290,17 +291,38 @@ def main():
 
         if bbox is not None:
             x1, y1, x2, y2 = bbox
-            roi = frame[y1:y2, x1:x2]
+            
+            # -------------------------------------------------------
+            # EXPANSIÓN: crear ROI ampliado (alcance del brazo)
+            # -------------------------------------------------------
+            ancho_persona = x2 - x1
+            
+            # SOLO EXPANDIR LATERALES (40% del ancho a cada lado = mitad del 80% anterior)
+            # NO expandir arriba ni abajo
+            margen_horizontal = int(ancho_persona * 0.4)
+            
+            # Calcular ROI expandido (SOLO en horizontal)
+            roi_x1 = max(0, x1 - margen_horizontal)
+            roi_y1 = y1  # SIN EXPANSIÓN arriba
+            roi_x2 = min(w_frame, x2 + margen_horizontal)
+            roi_y2 = y2  # SIN EXPANSIÓN abajo
+            
+            # Extraer ROI expandido
+            roi_expandido = frame[roi_y1:roi_y2, roi_x1:roi_x2]
+            
+            # DEBUG: Dibujar ROI expandido (opcional, comentar si molesta)
+            cv2.rectangle(frame_out, (roi_x1, roi_y1), (roi_x2, roi_y2), (255, 255, 0), 2)  # Cyan
 
             # -------------------------------------------------------
-            # 2) Detectar folio
+            # 2) Detectar folio en ROI expandido
             # -------------------------------------------------------
-            rect_folio = detectar_folio_en_roi(roi)
+            rect_folio = detectar_folio_en_roi(roi_expandido)
 
             if rect_folio is not None:
+                # Ajustar coordenadas al frame completo
                 box = cv2.boxPoints(rect_folio).astype(np.int32)
-                box[:, 0] += x1
-                box[:, 1] += y1
+                box[:, 0] += roi_x1
+                box[:, 1] += roi_y1
 
                 cv2.drawContours(frame_out, [box], 0, (0, 0, 255), 3)
 
@@ -309,7 +331,7 @@ def main():
                 # -------------------------------------------------------
                 altura_cm = calcular_altura(bbox, rect_folio)
                 if altura_cm is not None:
-                    alturas_recent.append(altura_cm)  # AÑADIR a la cola
+                    alturas_recent.append(altura_cm)
                     
                     # Altura del frame actual
                     cv2.putText(
@@ -331,7 +353,7 @@ def main():
                             (10, 110),
                             cv2.FONT_HERSHEY_SIMPLEX,
                             1.0,
-                            (0, 255, 0),  # Verde para diferenciarla
+                            (0, 255, 0),
                             2
                         )
 
