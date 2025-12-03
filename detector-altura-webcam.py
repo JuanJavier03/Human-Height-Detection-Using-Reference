@@ -3,12 +3,14 @@ Detección integrada HUMANO (YOLO-SEG) + FOLIO (OpenCV clásico)
 sobre WEBCAM en tiempo real, y cálculo aproximado de la altura
 del humano usando un folio A4 como referencia.
 
-Este archivo incluye:
-    1) Corrección de perspectiva del folio mediante su ratio geométrico (1.414).
-    2) Corrección por pies adelantados basada en geometría de cámara (factor ≈ 1.03).
-    3) Ajuste de precisión final por suela/puntera (~ -1.0 cm).
+Incluye:
+    - Segmentación precisa de persona (bounding box real, derivada de máscara)
+    - Corrección de perspectiva del folio (ratio geométrico 1.414)
+    - Corrección geométrica por pies adelantados (factor = Z/(Z-L))
+    - Ajuste final por calzado (~2 cm)
 
-Autor: (tu nombre)
+El folio se detecta ÚNICAMENTE dentro de la bounding box de la persona.
+No hay expansión lateral ni superior.
 """
 
 import cv2
@@ -16,50 +18,73 @@ import numpy as np
 from collections import deque
 from ultralytics import YOLO
 
-# Modelo de segmentación
+
+# ============================================================
+# CONFIGURACIÓN
+# ============================================================
+
 PESOS_YOLO = "yolov8s-seg.pt"
 
 
 # ============================================================
-#  DETECTOR DE PERSONA (SEGMENTACIÓN)
+# DETECTOR DE PERSONA POR SEGMENTACIÓN
 # ============================================================
 
 def detectar_persona_segmentado(frame, modelo):
     """
-    Devuelve:
-      - bbox_persona = (x1, y1, x2, y2) EXACTA gracias a la máscara
-      - mask binaria
-      - frame con bounding dibujada
+    Detección exacta de persona usando segmentación.
+    - YOLO trabaja sobre el frame original.
+    - retina_masks=True evita desplazamientos.
+    - La bounding box se calcula directamente de la máscara.
     """
 
-    r = modelo(frame, conf=0.55, iou=0.7)[0]
+    results = modelo(
+        frame,
+        imgsz=640,
+        conf=0.15,
+        iou=0.6,
+        retina_masks=True
+    )
+
+    r = results[0]
 
     if r.masks is None or len(r.masks) == 0:
-        return None, None, frame
+        return None, None
 
-    mask = r.masks.data[0].cpu().numpy()
+    masks = r.masks.data.cpu().numpy()
+    clases = r.boxes.cls.cpu().numpy()
+
+    # Filtrar SOLO "persona" (class=0)
+    idx = np.where(clases == 0)[0]
+    if len(idx) == 0:
+        return None, None
+
+    # elegir la máscara más grande
+    best = max(idx, key=lambda i: masks[i].sum())
+    mask = masks[best]
+
     mask_bin = (mask * 255).astype("uint8")
 
     ys, xs = np.where(mask_bin > 0)
-    if len(xs) == 0 or len(ys) == 0:
-        return None, None, frame
+    if len(xs) == 0:
+        return None, None
 
-    x1 = int(xs.min())
-    x2 = int(xs.max())
-    y1 = int(ys.min())
-    y2 = int(ys.max())
+    x1, x2 = int(xs.min()), int(xs.max())
+    y1, y2 = int(ys.min()), int(ys.max())
 
-    frame_out = frame.copy()
-    cv2.rectangle(frame_out, (x1, y1), (x2, y2), (0, 255, 0), 3)
+    return (x1, y1, x2, y2), mask_bin
 
-    return (x1, y1, x2, y2), mask_bin, frame_out
 
 
 # ============================================================
-#  DETECTOR DE FOLIO
+# DETECTOR DE FOLIO
 # ============================================================
 
 def detectar_folio_en_roi(roi):
+    """
+    Detecto el folio usando LAB + bordes.
+    Esta función trabaja únicamente dentro del ROI (bounding de la persona).
+    """
 
     lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB)
     L, A, B = cv2.split(lab)
@@ -80,20 +105,16 @@ def detectar_folio_en_roi(roi):
     contornos, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     mejor_rect = None
-    mejor_puntuacion = 0
+    mejor_score = 0
 
     for c in contornos:
         if len(c) < 5:
             continue
 
         rect = cv2.minAreaRect(c)
-        (cx, cy), (w, h), angle = rect
+        (_, _), (w, h), _ = rect
 
-        if w == 0 or h == 0:
-            continue
-
-        area_rect = w * h
-        if area_rect < 5000:
+        if w == 0 or h == 0 or w * h < 5000:
             continue
 
         ratio = max(w, h) / min(w, h)
@@ -103,97 +124,50 @@ def detectar_folio_en_roi(roi):
         box = cv2.boxPoints(rect).astype(np.int32)
         mask_rect = np.zeros(L.shape, dtype=np.uint8)
         cv2.drawContours(mask_rect, [box], -1, 255, -1)
-
         mean_L = cv2.mean(L, mask=mask_rect)[0]
-        puntuacion = area_rect * (mean_L / 255.0)
 
-        if puntuacion > mejor_puntuacion:
-            mejor_puntuacion = puntuacion
+        score = (w*h) * (mean_L/255.0)
+        if score > mejor_score:
+            mejor_score = score
             mejor_rect = rect
 
     return mejor_rect
 
 
+
 # ============================================================
-# ALTURA COMPLETA (regla de 3 + perspectiva + pies + suela)
+# CÁLCULO FINAL DE ALTURA
 # ============================================================
 
 def calcular_altura(bbox_persona, rect_folio):
-    """
-    Correcciones aplicadas:
-
-    1) Regla de 3 usando el lado mayor del folio → 29.7 cm.
-
-    2) Corrección por perspectiva del A4:
-         factor_folio = R_real / R_obs
-         Corrige compresión del folio cuando está inclinado.
-
-    3) CORRECCIÓN POR PIES ADELANTADOS (factor geométrico calculado):
-         Derivación:
-            La punta del pie está adelantada una distancia L respecto al torso.
-            El folio está en el plano del torso (distancia Z a la cámara).
-            La punta del pie está en Z_pie = Z - L.
-            En pinhole:
-                 H_medido ∝ 1/Z_pie
-                 H_real   ∝ 1/Z
-            Por tanto:
-                 factor = H_medido / H_real = Z / (Z - L)
-
-         Valores típicos:
-            L ≈ 0.15 m (adelanto promedio del pie humano)
-            Z entre 2 y 4 m
-            factor entre 1.04 y 1.065
-
-         El usuario puede modificar Z desde esta función.
-
-    4) Ajuste por suela/puntera (~1 cm de media)
-    """
-
-    # ----------------------------------------------
-    # 1) Altura medida directamente de segmentación
-    # ----------------------------------------------
     x1, y1, x2, y2 = bbox_persona
     altura_px = y2 - y1
 
-    # ----------------------------------------------
-    # 2) Dimensiones del folio detectado
-    # ----------------------------------------------
-    (_, _), (w, h), angle = rect_folio
-    folio_lado_mayor = max(w, h)
-    folio_lado_menor = min(w, h)
+    (_, _), (w, h), _ = rect_folio
+    mayor = max(w, h)
+    menor = min(w, h)
 
-    if folio_lado_mayor == 0 or folio_lado_menor == 0:
+    if mayor == 0 or menor == 0:
         return None
 
-    # ----------------------------------------------
-    # 3) Regla de 3
-    # ----------------------------------------------
-    altura_base_cm = (altura_px / folio_lado_mayor) * 29.7
+    # 1) regla de 3 usando lado mayor del folio (29.7 cm)
+    altura_base_cm = (altura_px / mayor) * 29.7
 
-    # ----------------------------------------------
-    # 4) Corrección por perspectiva del folio
-    # ----------------------------------------------
+    # 2) corrección de perspectiva A4
     R_real = 1.414
-    R_obs = folio_lado_mayor / folio_lado_menor
+    R_obs = mayor / menor
     factor_folio = R_real / R_obs
     altura_corr_folio = altura_base_cm * factor_folio
 
-    # ----------------------------------------------
-    # 5) CORRECCIÓN por pies adelantados (factor físico)
-    # ----------------------------------------------
-    Z = 3.0  # metros (distancia estimada cámara - torso)
-    L = 0.15  # metros (adelanto medio del pie)
-    if Z <= L:
-        Z = L + 0.01   # seguridad matemática
+    # 3) corrección por pies adelantados (modelo geométrico)
+    Z = 3.20   # distancia cámara–torso
+    L = 0.10   # adelanto del pie
 
     factor_pies = Z / (Z - L)
     altura_corr_pies = altura_corr_folio * factor_pies
 
-    # ----------------------------------------------
-    # 6) Ajuste por suela / puntera (+1 cm de calzado)
-    # ----------------------------------------------
-    ajuste_suela = 1.0
-    altura_final = altura_corr_pies - ajuste_suela
+    # 4) ajuste por suela/puntera
+    altura_final = altura_corr_pies - 2.0
 
     return altura_final
 
@@ -204,20 +178,14 @@ def calcular_altura(bbox_persona, rect_folio):
 # ============================================================
 
 def main():
-
-    print("Cargando YOLO (segmentación)...")
     modelo = YOLO(PESOS_YOLO)
-
-    alturas_recent = deque(maxlen=5)
+    alturas = deque(maxlen=5)
 
     cap = cv2.VideoCapture(0)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
-    window_name = "Detección Humano (SEG) + Folio + Altura"
-    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-
-    print("Webcam iniciada.")
+    cv2.namedWindow("Altura", cv2.WINDOW_NORMAL)
 
     while True:
         ret, frame = cap.read()
@@ -225,70 +193,66 @@ def main():
             break
 
         frame_out = frame.copy()
-        h_frame, w_frame = frame.shape[:2]
 
-        # 1) Persona (segmentación)
-        bbox, mask_persona, frame_out = detectar_persona_segmentado(frame_out, modelo)
+        # ===========================================
+        # 1) PERSONA
+        # ===========================================
+        bbox, mask_persona = detectar_persona_segmentado(frame, modelo)
 
         if bbox is not None:
             x1, y1, x2, y2 = bbox
-            ancho_persona = x2 - x1
 
-            margen_horizontal = int(ancho_persona * 0.4)
+            # bbox persona
+            cv2.rectangle(frame_out, (x1, y1), (x2, y2), (0,255,0), 3)
 
-            roi_x1 = max(0, x1 - margen_horizontal)
-            roi_y1 = y1
-            roi_x2 = min(w_frame, x2 + margen_horizontal)
-            roi_y2 = y2
+            # ===========================================
+            # 2) ROI = bounding box EXACTA de la persona
+            # ===========================================
+            roi_x1, roi_x2 = x1, x2
+            roi_y1, roi_y2 = y1, y2
 
-            roi_expandido = frame[roi_y1:roi_y2, roi_x1:roi_x2]
-            cv2.rectangle(frame_out, (roi_x1, roi_y1), (roi_x2, roi_y2), (255, 255, 0), 2)
+            roi = frame[roi_y1:roi_y2, roi_x1:roi_x2]
 
-            # 2) Folio
-            rect_folio = detectar_folio_en_roi(roi_expandido)
+            # ===========================================
+            # 3) DETECTAR FOLIO dentro del bbox y nada más
+            # ===========================================
+            rect_folio = detectar_folio_en_roi(roi)
 
             if rect_folio is not None:
                 box = cv2.boxPoints(rect_folio).astype(np.int32)
-                box[:, 0] += roi_x1
-                box[:, 1] += roi_y1
-                cv2.drawContours(frame_out, [box], 0, (0, 0, 255), 3)
+                box[:,0] += roi_x1
+                box[:,1] += roi_y1
+                cv2.drawContours(frame_out, [box], 0, (0,0,255), 3)
 
-                # 3) Altura
-                altura_cm = calcular_altura(bbox, rect_folio)
+                # ===========================================
+                # 4) ALTURA
+                # ===========================================
+                altura = calcular_altura(bbox, rect_folio)
 
-                if altura_cm is not None:
-                    alturas_recent.append(altura_cm)
+                if altura is not None:
+                    alturas.append(altura)
 
-                    cv2.putText(
-                        frame_out,
-                        f"Altura: {altura_cm:.1f} cm",
-                        (10, 60),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        1.2,
-                        (0, 255, 255),
-                        3
-                    )
+                    cv2.putText(frame_out,
+                                f"Altura: {altura:.1f} cm",
+                                (10,50),
+                                cv2.FONT_HERSHEY_SIMPLEX,1.2,
+                                (0,255,255),3)
 
-                    if len(alturas_recent) > 0:
-                        altura_mediana = np.median(list(alturas_recent))
-                        cv2.putText(
-                            frame_out,
-                            f"Altura estimada: {altura_mediana:.1f} cm",
-                            (10, 110),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            1.0,
-                            (0, 255, 0),
-                            2
-                        )
+                    media = np.median(list(alturas))
+                    cv2.putText(frame_out,
+                                f"Media: {media:.1f} cm",
+                                (10,100),
+                                cv2.FONT_HERSHEY_SIMPLEX,1.0,
+                                (0,255,0),2)
 
-        cv2.imshow(window_name, frame_out)
+        cv2.imshow("Altura", frame_out)
 
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord("q"):
+        if cv2.waitKey(1) & 0xFF == ord("q"):
             break
 
     cap.release()
     cv2.destroyAllWindows()
+
 
 
 if __name__ == "__main__":
